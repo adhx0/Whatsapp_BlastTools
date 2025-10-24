@@ -5,176 +5,278 @@ const path = require('path');
 const readline = require('readline-sync');
 const XLSX = require('xlsx');
 
-// Path custom untuk auth
+// ---------- CONFIG ----------
 const SESSION_DIR = path.join(__dirname, '.session_data');
+const OUTPUT_CSV = path.join(__dirname, 'hasil_nomor.csv');
+const MIN_PHONE_LENGTH = 9;
+const EXCEL_DEFAULT_FOLDER = __dirname;
+// -----------------------------
 
-// Fungsi untuk membaca nomor dari file Excel
-const bacaNomorDariExcel = (filePath, sheetName = 'Sheet1') => {
+// ---------- HELPER FUNCTIONS ----------
+const formatTimestamp = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+const colIndexToLetter = (index) => {
+  let s = "";
+  while (index >= 0) {
+    s = String.fromCharCode((index % 26) + 65) + s;
+    index = Math.floor(index / 26) - 1;
+  }
+  return s;
+};
+
+const getExcelFilesInFolder = (dir = EXCEL_DEFAULT_FOLDER) => {
   try {
-    const workbook = XLSX.readFile(filePath);
-    const worksheet = workbook.Sheets[sheetName];
-    if (!worksheet) {
-      console.error(`❌ Error: Lembar kerja '${sheetName}' tidak ditemukan di file Excel.`);
-      return [];
-    }
-    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-    const nomorTelepon = [];
-    for (let row of data) {
-      const line = String(row[0]).trim();
-      if (line) {
-        let nomor = line.replace(/[^\d+]/g, '');
-        if (nomor.startsWith('08')) {
-          nomor = '62' + nomor.substring(1);
-        } else if (nomor.startsWith('+62')) {
-          nomor = nomor.substring(1);
-        } else if (nomor.startsWith('8')) {
-          nomor = '62' + nomor;
-        } else if (!nomor.startsWith('62')) {
-          continue;
-        }
-        if (nomor.length > 10 && nomor.startsWith('62')) {
-          nomorTelepon.push(`${nomor}@c.us`);
-        } else {
-          console.warn(`Peringatan: Nomor tidak valid dan dilewati -> ${line}`);
-        }
-      }
-    }
-    return nomorTelepon;
+    const files = fs.readdirSync(dir);
+    return files.filter(f => {
+      const ext = path.extname(f).toLowerCase();
+      return ext === '.xlsx' || ext === '.xls';
+    }).map(f => path.join(dir, f));
   } catch (e) {
-    console.error(`❌ Error membaca file Excel: ${e}`);
+    console.error(`❌ Gagal membaca folder ${dir}: ${e.message}`);
     return [];
   }
 };
 
-// Fungsi untuk reset session (rename dulu biar tidak kena EBUSY)
-const resetSession = async () => {
-  console.warn('\n⚠️ Reset session sedang berjalan...');
-  try {
-    await client.destroy();
-    console.log('✅ Client destroyed, siap reset sesi.');
-  } catch (e) {
-    console.warn('⚠️ Client sudah tidak aktif.');
-  }
+const getCellValue = (worksheet, colIndex, rowIndex) => {
+  const colLetter = colIndexToLetter(colIndex);
+  const addr = `${colLetter}${rowIndex}`;
+  const cell = worksheet[addr];
+  if (cell && typeof cell.v !== 'undefined' && cell.v !== null) return cell.v;
 
-  if (fs.existsSync(SESSION_DIR)) {
-    const backupDir = SESSION_DIR + '_old_' + Date.now();
-    try {
-      fs.renameSync(SESSION_DIR, backupDir);
-      console.log(`✅ Session lama dipindahkan ke: ${backupDir}`);
-    } catch (e) {
-      console.error(`❌ Gagal memindahkan session: ${e.message}`);
+  const merges = worksheet['!merges'] || [];
+  for (const m of merges) {
+    if (rowIndex - 1 >= m.s.r && rowIndex - 1 <= m.e.r &&
+      colIndex >= m.s.c && colIndex <= m.e.c) {
+      const masterAddr = `${colIndexToLetter(m.s.c)}${m.s.r + 1}`;
+      const masterCell = worksheet[masterAddr];
+      if (masterCell && typeof masterCell.v !== 'undefined' && masterCell.v !== null) return masterCell.v;
     }
   }
-
-  console.log('🔄 Inisialisasi ulang untuk QR Code baru...');
-  client.initialize();
+  return null;
 };
 
-// Buat client
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: SESSION_DIR
-  }),
-  puppeteer: {
-    args: ['--disable-logging', '--disable-dev-shm-usage']
-  }
-});
+const isLikelyPhone = (raw) => {
+  if (raw === null || typeof raw === 'undefined') return false;
+  const s = String(raw).trim();
+  if (s === '') return false;
+  let cleaned = s.replace(/[^\d+]/g, '');
+  const onlyDigits = cleaned.replace(/\D/g, '');
+  if (onlyDigits.length <= 1) return false;
 
-// Event QR → tampilkan dan hapus backup lama
-client.on('qr', (qr) => {
-  console.log('📲 Silakan scan QR Code ini dengan WhatsApp Anda:');
-  qrcode.generate(qr, { small: true });
+  if (cleaned.startsWith('+')) return /^\+628\d{6,}$/.test(cleaned);
+  if (/^08\d{6,}$/.test(cleaned)) return true;
+  if (/^8\d{6,}$/.test(cleaned)) return true;
 
-  // Hapus folder backup lama
-  const baseDir = path.dirname(SESSION_DIR);
-  fs.readdirSync(baseDir).forEach((file) => {
-    if (file.startsWith('.session_data_old_')) {
-      const oldPath = path.join(baseDir, file);
-      try {
-        fs.rmSync(oldPath, { recursive: true, force: true });
-        console.log(`🗑️ Folder backup lama dihapus: ${file}`);
-      } catch (e) {
-        console.error(`❌ Gagal hapus folder backup: ${file} -> ${e.message}`);
+  return false;
+};
+
+// --- baca semua kolom ---
+const bacaSemuaKolomFiltered = (filePath, startRow = 1) => {
+  try {
+    const workbook = XLSX.readFile(filePath, { cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) {
+      console.warn(`⚠️ Sheet pertama tidak ditemukan di ${path.basename(filePath)}.`);
+      return { worksheet: null, entries: [] };
+    }
+    const ref = worksheet['!ref'];
+    if (!ref) return { worksheet, entries: [] };
+    const range = XLSX.utils.decode_range(ref);
+
+    const results = [];
+    for (let r = Math.max(startRow, range.s.r + 1); r <= range.e.r + 1; r++) {
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const rawVal = getCellValue(worksheet, c, r);
+        if (rawVal === null || typeof rawVal === 'undefined') continue;
+        let cellStr = typeof rawVal === 'string' ? rawVal.trim() : String(rawVal).trim();
+        if (cellStr === '') continue;
+
+        if (!isLikelyPhone(cellStr)) continue;
+
+        const cleaned = cellStr.replace(/[^\d+]/g, '');
+        results.push({ row: r, col: colIndexToLetter(c), raw: cellStr, cleaned });
       }
     }
-  });
+    return { worksheet, entries: results };
+  } catch (e) {
+    console.error(`❌ Error membaca ${path.basename(filePath)}: ${e.message}`);
+    return { worksheet: null, entries: [] };
+  }
+};
+
+const normalizeCleanedToWhatsappId = (cleaned) => {
+  if (!cleaned) return null;
+  let s = String(cleaned);
+  if (s.startsWith('+62')) s = s.substring(1);
+  else if (s.startsWith('0')) s = '62' + s.substring(1);
+  else if (s.startsWith('8')) s = '62' + s;
+  else if (!s.startsWith('62')) {
+    const digitsOnly = s.replace(/\D/g, '');
+    if (digitsOnly.length < MIN_PHONE_LENGTH) return null;
+    s = digitsOnly;
+  }
+  const digitsOnly = s.replace(/\D/g, '');
+  return `${digitsOnly}@c.us`;
+};
+
+const appendCsvHeaderIfNeeded = (outPath) => {
+  if (!fs.existsSync(outPath)) {
+    fs.writeFileSync(outPath, 'tanggal_waktu,file,row,col,nomor,status,message\n', 'utf-8');
+  }
+};
+const appendCsvRow = (outPath, row) => {
+  const ts = formatTimestamp();
+  const line = [
+    `"${ts}"`,
+    `"${row.file.replace(/"/g, '""')}"`,
+    row.row,
+    `"${row.col}"`,
+    `"${row.number || ''}"`,
+    row.status,
+    `"${(row.message || '').replace(/"/g, '""')}"`
+  ].join(',') + '\n';
+  fs.appendFileSync(outPath, line, 'utf-8');
+};
+
+const parseCommaFiles = (inputStr) => {
+  if (!inputStr || !inputStr.trim()) return [];
+  const parts = inputStr.split(',').map(s => s.trim()).filter(Boolean);
+  const resolved = [];
+  for (const p of parts) {
+    const candidate = path.isAbsolute(p) ? p : path.join(__dirname, p);
+    if (!fs.existsSync(candidate)) {
+      console.warn(`⚠️ File tidak ditemukan: ${candidate} (dilewati)`);
+      continue;
+    }
+    const ext = path.extname(candidate).toLowerCase();
+    if (ext !== '.xlsx' && ext !== '.xls') {
+      console.warn(`⚠️ Bukan file Excel (.xls/.xlsx): ${candidate} (dilewati)`);
+      continue;
+    }
+    resolved.push(candidate);
+  }
+  return resolved;
+};
+
+// ---------- WHATSAPP CLIENT ----------
+const client = new Client({
+  authStrategy: new LocalAuth({ dataPath: SESSION_DIR }),
+  puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+});
+
+client.on('qr', (qr) => {
+  console.log('📲 Scan QR Code ini dengan WhatsApp Anda:');
+  qrcode.generate(qr, { small: true });
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('❌ AUTH FAILURE:', msg);
+});
+
+client.on('disconnected', (reason) => {
+  console.warn('⚠️ Koneksi terputus:', reason);
+  client.initialize();
 });
 
 client.on('ready', async () => {
-  console.log('✅ Berhasil terhubung ke WhatsApp!');
+  console.log('✅ WhatsApp client ready.');
 
-  const nomorCustomerPath = path.join(__dirname, 'nomor_customer.xlsx');
-  const nomorTelepon = bacaNomorDariExcel(nomorCustomerPath);
-
-  if (nomorTelepon.length === 0) {
-    console.log("Tidak ada nomor yang ditemukan di file Excel.");
+  // langsung pakai opsi input manual
+  const inputFilesStr = readline.question('\nMasukkan daftar file Excel (pisahkan koma, contoh: a.xlsx, b.xls):\nFiles: ');
+  const files = parseCommaFiles(inputFilesStr);
+  if (!files || files.length === 0) {
+    console.log('❌ Tidak ada file Excel valid yang dipilih. Keluar.');
+    client.destroy();
     return;
   }
-  console.log(`Ditemukan ${nomorTelepon.length} nomor. Memulai pengiriman...`);
 
+  const startRow = 1;
+  console.log(`➡️ Script akan mulai membaca dari baris ${startRow} (semua kolom).`);
+
+  const pesanFile = path.join(__dirname, 'pesan.txt');
   let pesan = '';
-  const pesanFilePath = path.join(__dirname, 'pesan.txt');
   try {
-    pesan = fs.readFileSync(pesanFilePath, 'utf-8');
-    console.log("✅ Pesan berhasil dimuat dari 'pesan.txt'.");
+    pesan = fs.readFileSync(pesanFile, 'utf-8');
+    console.log(`✅ Pesan dimuat dari ${path.basename(pesanFile)}.`);
   } catch (e) {
-    console.error(`❌ Gagal membaca file pesan: ${e}`);
+    console.error(`❌ Gagal membaca pesan: ${e.message}`);
     client.destroy();
     return;
   }
 
   const gambarPathInput = readline.question("Masukkan jalur file gambar (opsional, tekan Enter untuk lewati): \n");
-  let media;
+  let media = null;
   if (gambarPathInput) {
-    try {
-      const gambarPath = path.join(...gambarPathInput.split(path.sep));
-      if (fs.existsSync(gambarPath)) {
-        media = MessageMedia.fromFilePath(gambarPath);
-        console.log("✅ Gambar berhasil dimuat.");
-      } else {
-        console.warn("⚠️ Jalur file gambar tidak valid.");
-      }
-    } catch (e) {
-      console.error(`❌ Gagal memuat gambar: ${e.message}`);
-    }
+    const gambarPath = path.isAbsolute(gambarPathInput) ? gambarPathInput : path.join(__dirname, gambarPathInput);
+    if (fs.existsSync(gambarPath)) {
+      try { media = MessageMedia.fromFilePath(gambarPath); console.log('✅ Gambar dimuat.'); }
+      catch (e) { console.warn('⚠️ Gagal muat gambar:', e.message); }
+    } else console.warn('⚠️ File gambar tidak ditemukan, melewati.');
   }
 
-  for (const nomor of nomorTelepon) {
-    try {
-      const isRegistered = await client.isRegisteredUser(nomor);
-      if (isRegistered) {
-        if (media) {
-          await client.sendMessage(nomor, media, { caption: pesan });
-        } else {
-          await client.sendMessage(nomor, pesan);
+  appendCsvHeaderIfNeeded(OUTPUT_CSV);
+  const globalNumbersSet = new Set();
+
+  for (const f of files) {
+    console.log(`\n📄 Memproses file: ${path.basename(f)} (semua kolom, mulai baris ${startRow})`);
+    const { worksheet, entries } = bacaSemuaKolomFiltered(f, startRow);
+    console.log(`   -> Ditemukan ${entries.length} sel berisi nomor valid.`);
+
+    if (!worksheet) {
+      console.warn(`⚠️ Melewati file ${path.basename(f)} karena worksheet tidak tersedia.`);
+      continue;
+    }
+
+    for (const e of entries) {
+      const rowNum = e.row;
+      const col = e.col;
+      const raw = e.raw;
+      const cleaned = e.cleaned;
+      const normalized = normalizeCleanedToWhatsappId(cleaned);
+
+      if (!normalized) {
+        console.log(`⚠️ Baris ${rowNum}, Kolom ${col}: gagal normalisasi -> "${raw}" (dilewati)`);
+        continue;
+      }
+
+      if (globalNumbersSet.has(normalized)) {
+        appendCsvRow(OUTPUT_CSV, { file: path.basename(f), row: rowNum, col, number: normalized, status: 'skipped-duplicate', message: 'Nomor sudah dikirim sebelumnya' });
+        console.log(`↩️ Skip duplicate ${normalized} (baris ${rowNum}, kolom ${col})`);
+        continue;
+      }
+
+      try {
+        const isRegistered = await client.isRegisteredUser(normalized);
+        if (!isRegistered) {
+          appendCsvRow(OUTPUT_CSV, { file: path.basename(f), row: rowNum, col, number: normalized, status: 'not-registered', message: 'Nomor tidak terdaftar WA' });
+          console.log(`❌ ${normalized} tidak terdaftar (baris ${rowNum}, kolom ${col})`);
+          continue;
         }
-        console.log(`✅ Pesan berhasil dikirim ke ${nomor}`);
-      } else {
-        console.log(`❌ Nomor ${nomor} tidak terdaftar di WhatsApp.`);
-      }
-    } catch (e) {
-      console.error(`❌ Gagal mengirim pesan ke ${nomor}: ${e}`);
-    }
 
-    const jeda = Math.random() * (50000 - 30000) + 30000;
-    console.log(`⏳ Menunggu ${Math.floor(jeda / 1000)} detik...`);
-    await new Promise(resolve => setTimeout(resolve, jeda));
+        if (media) await client.sendMessage(normalized, media, { caption: pesan });
+        else await client.sendMessage(normalized, pesan);
+
+        appendCsvRow(OUTPUT_CSV, { file: path.basename(f), row: rowNum, col, number: normalized, status: 'sent', message: '' });
+        console.log(`✅ Dikirim ke ${normalized} (baris ${rowNum}, kolom ${col})`);
+        globalNumbersSet.add(normalized);
+      } catch (err) {
+        console.error(`❌ Gagal kirim ke ${normalized} (baris ${rowNum}, kolom ${col}):`, err.message || err);
+        appendCsvRow(OUTPUT_CSV, { file: path.basename(f), row: rowNum, col, number: normalized, status: 'error', message: String(err.message || err) });
+      }
+
+      const delay = Math.floor(Math.random() * (50000 - 30000) + 30000);
+      console.log(`⏳ Menunggu ${Math.floor(delay / 1000)} detik...`);
+      await new Promise(res => setTimeout(res, delay));
+    }
   }
 
-  console.log("\n🎉 Selesai! Semua pesan telah diproses.");
+  console.log('\n🎉 Selesai! Laporan disimpan di', OUTPUT_CSV);
   client.destroy();
-});
-
-// Event auth gagal → reset session
-client.on('auth_failure', (msg) => {
-  console.error(`\n❌ AUTH FAILURE: ${msg}`);
-  resetSession();
-});
-
-// Event koneksi terputus → reset session
-client.on('disconnected', (reason) => {
-  console.warn(`\n⚠️ KONEKSI TERPUTUS! Alasan: ${reason}`);
-  resetSession();
 });
 
 client.initialize();
