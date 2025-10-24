@@ -1,40 +1,38 @@
-Panduan Penggunaan WhatsApp Blast
+====================================================
+📘 PANDUAN INSTRUKTOR
+WhatsApp Auto Sender - All Column Excel Reader
+====================================================
 
-Selamat datang di panduan penggunaan skrip otomatisasi WhatsApp. Dokumen ini akan membantu Anda menggunakan alat ini untuk mengirim pesan massal dan gambar dengan mudah.
+Nama file utama: wa_send_allcol_autosend.js
+Tujuan: Mengirim pesan WhatsApp otomatis ke semua nomor 
+        yang ditemukan dari semua kolom di file Excel (.xls/.xlsx).
 
-## Persiapan
+====================================================
+1️⃣ PERSIAPAN AWAL
+====================================================
 
-Sebelum menjalankan skrip, pastikan Anda telah menyiapkan dua file penting di dalam folder ini:
+1. Pastikan sudah terinstal Node.js di komputer Anda.
+   - Cek dengan perintah:
+     node -v
+   - Jika belum ada, download di:
+     https://nodejs.org/
 
-1.  nomor_customer.xlsx: File Excel yang berisi daftar nomor telepon.
-    -	Masukkan semua nomor telepon di kolom A (kolom pertama) pada Sheet1.
-    -   file ini mendukung berbagai format nomor, seperti 081..., 628..., +	628..., dan 8....
+2. Buat satu folder kerja, contoh: 
+   D:\WhatsAppAutoSend
 
-2.  pesan.txt: File teks yang berisi pesan yang ingin Anda kirim.
-    -   Cukup ketik atau salin-tempel pesan Anda ke dalam file ini. Script akan 	membaca seluruh isi file, termasuk baris baru.
+3. Salin file berikut ke dalam folder kerja:
+   - wa_send_allcol_autosend.js
+   - pesan.txt (berisi teks pesan yang akan dikirim)
+   - file Excel (contoh: data1.xlsx, data2.xls)
+   - (opsional) gambar yang akan dikirim, contoh: promo.jpg
 
-## Cara Menggunakan
+4. Jalankan program run.bat kemudian ikuti langkah-langkah selanjutnya
 
-1.  Jalankan Skrip:
-    -   Temukan file run.bat di dalam folder ini.
-    -   Klik dua kali pada file tersebut.
+====================================================
+👨‍🏫 PENUTUP
+====================================================
 
-2.  Ikuti Instruksi:
-    -   Sebuah jendela hitam (Command Prompt) akan muncul dan secara otomatis 	menginstal semua yang dibutuhkan.
-    -   Setelah persiapan selesai, program akan meminta Anda untuk memasukkan 	jalur file gambar.
-    -   Jika Anda ingin mengirim gambar bisa : Tarik gambar kemudian arahkan ke 	jendela hitam (command prompt), lalu tekan Enter. Pastikan contoh output 	nya seperti ini:
-        C:\Users\NamaAnda\Pictures\foto.jpg
-    -   Jika tidak ingin menambahkan gambar: Cukup tekan Enter untuk melewati 	langkah ini.
-
-3.  Hubungkan WhatsApp:
-    -   Setelah itu, sebuah QR code akan muncul di jendela Command Prompt.
-    -   Buka WhatsApp di HP Anda, masuk ke Pengaturan > Perangkat Tertaut, lalu 	pindai QR code tersebut.
-
-4.  Pengiriman Otomatis:
-    -   Skrip akan mulai mengirim pesan dan gambar secara otomatis ke semua nomor 	di daftar Excel Anda.
-    -   Mohon bersabar, karena ada jeda acak antar pengiriman untuk alasan 	keamanan.
-
-## Catatan Penting
-
-   - 	Hanya klik run.bat: Jangan jalankan file main.js secara langsung. 	File .bat akan mengurus semua yang dibutuhkan.
-   -	Risiko Pemblokiran Akun: Penggunaan skrip otomatisasi dapat melanggar 	Ketentuan Layanan WhatsApp dan berpotensi menyebabkan akun Anda diblokir. 	Gunakan dengan bijak dan bertanggung jawab.
+Script dibuat oleh: Adhi Nugroho (adhingrh01)
+Versi: v1.0 - All Column Auto Sender
+Lisensi: open_source
+Tanggal: 24 Oktober 2025
